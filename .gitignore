@@ -1,0 +1,31 @@
+# Local .terraform directories
+**/.terraform/*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Exclude sensitive variable files
+*.tfvars
+*.tfvars.json
+
+# Override files (used for local changes)
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI configuration files
+.terraformrc
+terraform.rc
+
+# Provider lock file
+.terraform.lock.hcl
+
+# Sensitive SSH keys (don’t commit your AWS .pem key!)
+*.pem
+*.key
