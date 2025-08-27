@@ -28,7 +28,8 @@ variable "vpc_id" {
   default     = null
 }
 
-
+# Default opens 80/443 to world + 3000 for Dokploy UI 
+# For production, override in terraform.tfvars and restrict 3000 (and 22) to YOUR.IP/32.
 variable "ingress_rules" {
   description = "List of variable-driven ingress rules"
   type = list(object({
@@ -39,12 +40,12 @@ variable "ingress_rules" {
     description = optional(string)
   }))
   default = [
-    { from_port = 80,  to_port = 80,  protocol = "tcp", cidrs = ["0.0.0.0/0"], description = "HTTP" },
-    { from_port = 443, to_port = 443, protocol = "tcp", cidrs = ["0.0.0.0/0"], description = "HTTPS" }
+    { from_port = 80, to_port = 80, protocol = "tcp", cidrs = ["0.0.0.0/0"], description = "HTTP" },
+    { from_port = 443, to_port = 443, protocol = "tcp", cidrs = ["0.0.0.0/0"], description = "HTTPS" },
+    { from_port = 3000, to_port = 3000, protocol = "tcp", cidrs = ["0.0.0.0/0"], description = "Dokploy UI (setup)" }
   ]
 }
 
-# ALWAYS define egress using this variable.
 variable "egress_rules" {
   description = "List of variable-driven egress rules"
   type = list(object({
@@ -62,7 +63,7 @@ variable "egress_rules" {
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)
-  default     = {
+  default = {
     Project   = "dokploy"
     ManagedBy = "terraform"
   }
