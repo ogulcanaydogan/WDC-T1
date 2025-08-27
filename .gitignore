@@ -29,3 +29,5 @@ terraform.rc
 # Sensitive SSH keys (don’t commit your AWS .pem key!)
 *.pem
 *.key
+.DS_Store
+**/.DS_Store
