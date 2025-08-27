@@ -3,162 +3,85 @@ terraform {
   required_providers {
     aws = {
       source  = "hashicorp/aws"
-      version = "~> 5.0"
+      version = "~> 5.46"
     }
   }
 }
 
 provider "aws" {
-  region = var.aws_region
+  region = var.region
 }
 
-# --- Networking: use the default VPC & a public subnet ---
+# Default VPC (used if var.vpc_id is null)
 data "aws_vpc" "default" {
+  count   = var.vpc_id == null ? 1 : 0
   default = true
 }
 
-data "aws_subnets" "default_public" {
-  filter {
-    name   = "vpc-id"
-    values = [data.aws_vpc.default.id]
-  }
+locals {
+  vpc_id = var.vpc_id != null ? var.vpc_id : data.aws_vpc.default[0].id
 }
 
-# --- AMI: Ubuntu 22.04 LTS (Jammy) ---
-data "aws_ami" "ubuntu_2204" {
+# Latest Ubuntu 24.04 LTS AMI (Canonical owner: 099720109477)
+data "aws_ami" "ubuntu" {
   most_recent = true
-  owners      = ["099720109477"] # Canonical
-
+  owners      = ["099720109477"]
   filter {
     name   = "name"
-    values = ["ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*"]
-  }
-
-  filter {
-    name   = "virtualization-type"
-    values = ["hvm"]
+    values = ["ubuntu/images/hvm-ssd-gp3/ubuntu-noble-24.04-amd64-server-*"]
   }
 }
 
-# --- Security Group: SSH + HTTP/HTTPS only ---
-resource "aws_security_group" "coolify_sg" {
-  name_prefix = "${var.name_prefix}-" # AWS ensures uniqueness
-  description = "Allow SSH and HTTP/HTTPS for Coolify"
-  vpc_id      = data.aws_vpc.default.id
+resource "aws_security_group" "dokploy" {
+  name        = "dokploy-sg"
+  description = "Security group driven by ingress/egress variables"
+  vpc_id      = local.vpc_id
 
-  # SSH
-  ingress {
-    description = "SSH"
-    from_port   = 22
-    to_port     = 22
-    protocol    = "tcp"
-    cidr_blocks = [var.ssh_cidr != "" ? var.ssh_cidr : "0.0.0.0/0"]
+  dynamic "ingress" {
+    for_each = var.ingress_rules
+    content {
+      from_port   = ingress.value.from_port
+      to_port     = ingress.value.to_port
+      protocol    = ingress.value.protocol
+      cidr_blocks = ingress.value.cidrs
+      description = try(ingress.value.description, null)
+    }
   }
 
-  # HTTP
-  ingress {
-    description = "HTTP"
-    from_port   = 80
-    to_port     = 80
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+  dynamic "egress" {
+    for_each = var.egress_rules
+    content {
+      from_port   = egress.value.from_port
+      to_port     = egress.value.to_port
+      protocol    = egress.value.protocol
+      cidr_blocks = egress.value.cidrs
+      description = try(egress.value.description, null)
+    }
   }
 
-  # HTTPS
-  ingress {
-    description = "HTTPS"
-    from_port   = 443
-    to_port     = 443
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  # TEMP: Coolify UI on port 8000 until you set a hostname + SSL
-  ingress {
-    description = "Coolify UI (temporary)"
-    from_port   = 8000
-    to_port     = 8000
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-  # Realtime WebSocket ports for Coolify UI
-  ingress {
-    description = "Coolify Realtime"
-    from_port   = 6001
-    to_port     = 6002
-    protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-
-  # Outbound: allow all
-  egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
-    cidr_blocks = ["0.0.0.0/0"]
-  }
-
-  tags = {
-    Name = "${var.name_prefix}-sg"
-  }
+  tags = merge(var.tags, { Name = "dokploy-sg" })
 }
 
-# --- cloud-init user_data (install Docker + Coolify as root) ---
-locals {
-  user_data = <<-BASH
-    #!/usr/bin/env bash
-    set -euo pipefail
-    export DEBIAN_FRONTEND=noninteractive
-
-    apt-get update -y
-    apt-get upgrade -y
-    apt-get install -y curl git jq ca-certificates gnupg htop
-
-    # Install Docker and enable it
-    curl -fsSL https://get.docker.com | sh
-    systemctl enable --now docker
-
-    # Optional: add small swap (2G) to help with builds
-    if ! swapon --summary | grep -q '.'; then
-      fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
-      chmod 600 /swapfile
-      mkswap /swapfile
-      swapon /swapfile
-      echo '/swapfile none swap sw 0 0' >> /etc/fstab
-    fi
-
-    # Install Coolify as ROOT (recommended)
-    curl -fsSL https://cdn.coollabs.io/coolify/install.sh | bash
-
-    # Ensure the stack is up
-    docker compose -f /root/.coolify/docker-compose.yml up -d
-  BASH
-}
-
-# --- Instance ---
-resource "aws_instance" "coolify" {
-  ami                         = data.aws_ami.ubuntu_2204.id
+resource "aws_instance" "dokploy" {
+  ami                         = data.aws_ami.ubuntu.id
   instance_type               = var.instance_type
-  subnet_id                   = element(data.aws_subnets.default_public.ids, 0)
-  vpc_security_group_ids      = [aws_security_group.coolify_sg.id]
-  associate_public_ip_address = true
   key_name                    = var.key_name
-
-  user_data                   = local.user_data
-  user_data_replace_on_change = true
-
-  tags = {
-    Name = "${var.name_prefix}-vm"
-  }
-
-  metadata_options {
-    http_endpoint = "enabled"
-    http_tokens   = "required"
-  }
+  vpc_security_group_ids      = [aws_security_group.dokploy.id]
+  associate_public_ip_address = true
 
   root_block_device {
-    volume_size = 40
+    volume_size = var.root_volume_gb
     volume_type = "gp3"
   }
+
+  # Install Dokploy (installs Docker if missing)
+  user_data = <<-EOF
+    #!/bin/bash
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y
+    apt-get install -y curl
+    curl -sSL https://dokploy.com/install.sh | sh
+  EOF
+
+  tags = merge(var.tags, { Name = "dokploy-server" })
 }
